@@ -18,4 +18,5 @@ The `@formula` macro is copied from [`StatsModels.jl`](https://github.com/JuliaS
 
 The `@formula` macro is implemented for generalized linear models, both hierarchical and non-hierarchical.
 The data constructors are also implemented.
+
 Still under development are likelihood families and link functions, prior specifications and default priors, Turing model construction, and utils such as QR decomposition.
