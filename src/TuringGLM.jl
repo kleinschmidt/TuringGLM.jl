@@ -2,8 +2,10 @@ module TuringGLM
 
 using Statistics: mean, std, var
 using DataAPI: DataAPI
-using LinearAlgebra: I
+using LinearAlgebra: Diagonal, I, LowerTriangular
+using LinearAlgebra: normalize, normalize!
 using REPL: levenshtein
+using SparseArrays: SparseMatrixCSC
 using StatsBase: StatsBase
 using Tables: Tables
 using TableOperations: TableOperations
@@ -18,6 +20,7 @@ include("utils.jl")
 include("contrasts.jl")
 include("formula.jl")
 include("terms.jl")
+include("remat.jl")
 include("error_messages.jl")
 include("schema.jl")
 include("data_constructors.jl")

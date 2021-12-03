@@ -116,12 +116,15 @@ outer call, one for each argument of the inner call.  For the ith new child, the
 original inner call is replaced with the ith argument of the inner call.
 """
 struct Distributive <: FormulaRewrite end
+
 const DISTRIBUTIVE = Set([:& => :+])
+
 function applies(ex::Expr, child_idx::Int, ::Type{Distributive})
     return is_call(ex) &&
            is_call(ex.args[child_idx]) &&
            (ex.args[1] => ex.args[child_idx].args[1]) in DISTRIBUTIVE
 end
+
 function rewrite!(ex::Expr, child_idx::Int, ::Type{Distributive})
     @debug "    distributive: $ex -> "
     new_args = deepcopy(ex.args[child_idx].args)
@@ -142,9 +145,11 @@ Remove numbers from interaction terms, so `1&x` becomes `&(x)` (which is later
 cleaned up by `EmptyAnd`).
 """
 struct And1 <: FormulaRewrite end
+
 function applies(ex::Expr, child_idx::Int, ::Type{And1})
     return is_call(ex, :&) && ex.args[child_idx] isa Number
 end
+
 function rewrite!(ex::Expr, child_idx::Int, ::Type{And1})
     @debug "    &1: $ex ->"
     ex.args[child_idx] == 1 ||
@@ -168,10 +173,17 @@ const SPECIALS = (:+, :&, :*, :~)
 
 parse!(x) = parse!(x, [And1, Star, AssociativeRule, Distributive])
 parse!(x, rewrites) = x
+
 function parse!(ex::Expr, rewrites::Vector)
     @debug "parsing $ex"
     catch_dollar(ex)
     check_call(ex)
+
+    # don't recurse into captured calls
+    if is_call(ex, :capture_call) || is_call(ex, :(StatsModels.capture_call))
+        @debug "  skipping capture_call"
+        return ex
+    end
 
     # parse a copy of non-special calls
     ex_parsed = ex.args[1] ∉ SPECIALS ? deepcopy(ex) : ex
@@ -191,7 +203,34 @@ function parse!(ex::Expr, rewrites::Vector)
 
     if ex.args[1] ∈ SPECIALS
         return ex_parsed
+    else
+        @debug "  capturing non-special call $ex"
+        return capture_call_ex!(ex, ex_parsed)
     end
+end
+
+"""
+    capture_call_ex!(ex::Expr, ex_parsed::Expr)
+
+Capture a call to a function that is not part of the formula DSL.  This replaces
+`ex` with a call to [`capture_call`](@ref).  `ex_parsed` is a copy of `ex` whose
+arguments have been parsed according to the normal formula DSL rules and which
+will be passed as the final argument to `capture_call`.
+"""
+function capture_call_ex!(ex::Expr, ex_parsed::Expr)
+    symbols = extract_symbols(ex)
+    symbols_ex = Expr(:tuple, symbols...)
+    f_anon_ex = esc(Expr(:(->), symbols_ex, copy(ex)))
+    f_orig = ex.args[1]
+    ex.args = [
+        :capture_call,
+        esc(f_orig),
+        f_anon_ex,
+        tuple(symbols...),
+        Meta.quot(deepcopy(ex)),
+        :[$(ex_parsed.args[2:end]...)],
+    ]
+    return ex
 end
 
 # generate Term expressions for symbols
@@ -202,6 +241,9 @@ function terms!(ex::Expr)
     if ex.args[1] ∈ SPECIALS
         ex.args[1] = esc(ex.args[1])
         ex.args[2:end] .= terms!.(ex.args[2:end])
+    elseif is_call(ex, :capture_call)
+        # final argument of capture_call holds parsed terms
+        ex.args[end].args .= terms!.(ex.args[end].args)
     end
     return ex
 end
@@ -210,12 +252,15 @@ function sort_terms!(ex::Expr)
     check_call(ex)
     if ex.args[1] ∈ ASSOCIATIVE
         sort!(view(ex.args, 2:length(ex.args)); by=degree)
+    elseif is_call(ex, :capture_call)
+        sort_terms!.(ex.args[end].args)
     else
         # recursively sort children
         sort_terms!.(ex.args)
     end
     return ex
 end
+
 sort_terms!(x) = x
 
 degree(i::Integer) = 0

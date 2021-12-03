@@ -7,9 +7,11 @@
 
 terms(t::FormulaTerm) = union(terms(t.lhs), terms(t.rhs))
 terms(t::InteractionTerm) = terms(t.terms)
+terms(t::FunctionTerm{Fo,Fa,names}) where {Fo,Fa,names} = Term.(names)
 terms(t::AbstractTerm) = [t]
 terms(t::MatrixTerm) = terms(t.terms)
 terms(t::TupleTerm) = mapreduce(terms, union, t)
+terms(t::RandomEffectsTerm) = union(terms(t.lhs), terms(t.rhs))
 
 needs_schema(::AbstractTerm) = true
 needs_schema(::ConstantTerm) = false
@@ -86,6 +88,20 @@ end
 
 schema(f::TermOrTerms, data) = schema(f, data, Dict{Symbol,Any}())
 
+struct MultiSchema{S}
+    base::S
+    subs::Dict{Any,S}
+end
+
+MultiSchema(s::S) where {S} = MultiSchema(s, Dict{Any,S}())
+
+struct FullRank
+    schema::Schema
+    already::Set{AbstractTerm}
+end
+
+FullRank(schema) = FullRank(schema, Set{AbstractTerm}())
+
 """
     concrete_term(t::Term, data[, hint])
 
@@ -159,6 +175,7 @@ When `t` is a `ContinuousTerm` or `CategoricalTerm` already, the term will be re
 unchanged _unless_ a matching term is found in the schema.  This allows
 selective re-setting of a schema to change the contrast coding or levels of a
 categorical term, or to change a continuous term to categorical or vice versa.
+When `t` is a `RandomEffectsTerm` it will error if the lhs is equal to rhs.
 """
 apply_schema(t, schema) = t
 apply_schema(terms::TupleTerm, schema) = reduce(+, apply_schema.(terms, Ref(schema)))
@@ -174,13 +191,67 @@ function apply_schema(t::Union{ContinuousTerm,CategoricalTerm}, schema::Schema)
 end
 apply_schema(t::MatrixTerm, sch::Schema) = MatrixTerm(apply_schema.(t.terms, Ref(sch)))
 
-function apply_schema(t::ConstantTerm, schema::Schema, Mod::Type)
+function apply_schema(t::ConstantTerm, schema::Schema)
     t.n ∈ (-1, 0, 1) || throw(
         ArgumentError(
             "can't create InterceptTerm from $(t.n) " * "(only -1, 0, and 1 allowed)"
         ),
     )
     return InterceptTerm{t.n == 1}()
+end
+
+function apply_schema(t::FunctionTerm{typeof(|)}, schema::MultiSchema{FullRank})
+    lhs, rhs = t.args_parsed
+
+    isempty(intersect(termvars(lhs), termvars(rhs))) ||
+        throw(ArgumentError("Same variable appears on both sides of |"))
+
+    return apply_schema(RandomEffectsTerm(lhs, rhs), schema)
+end
+
+# allowed types (or tuple thereof) for blocking variables (RHS of |):
+const GROUPING_TYPE = Union{
+    <:CategoricalTerm,<:InteractionTerm{<:NTuple{N,CategoricalTerm} where {N}}
+}
+check_re_group_type(term::GROUPING_TYPE) = true
+check_re_group_type(terms::Tuple{Vararg{<:GROUPING_TYPE}}) = true
+check_re_group_type(x) = false
+
+# make a potentially untyped RandomEffectsTerm concrete
+function apply_schema(t::RandomEffectsTerm, schema::MultiSchema{FullRank})
+    lhs, rhs = t.lhs, t.rhs
+
+    # get a schema that's specific for the grouping (RHS), creating one if needed
+    schema = get!(schema.subs, rhs, FullRank(schema.base.schema))
+
+    # handle intercept in LHS (including checking schema for intercept in another term)
+    if (
+        !hasintercept(lhs) &&
+        !omitsintercept(lhs) &&
+        ConstantTerm(1) ∉ schema.already &&
+        InterceptTerm{true}() ∉ schema.already
+    )
+        lhs = InterceptTerm{true}() + lhs
+    end
+
+    lhs, rhs = apply_schema.((lhs, rhs), Ref(schema))
+
+    # check whether grouping terms are categorical or interaction of categorical
+    check_re_group_type(rhs) || throw(
+        ArgumentError(
+            "blocking variables (those behind |) must be Categorical ($(rhs) is not)"
+        ),
+    )
+
+    return RandomEffectsTerm(MatrixTerm(lhs), rhs)
+end
+
+function apply_schema(t::AbstractTerm, sch::MultiSchema)
+    return apply_schema(t, sch.base)
+end
+
+function apply_schema(t::TupleTerm, sch::MultiSchema)
+    return sum(apply_schema.(t, Ref(sch)))
 end
 
 """
@@ -197,13 +268,6 @@ has_schema(t::TupleTerm) = all(has_schema(tt) for tt in t)
 has_schema(t::MatrixTerm) = has_schema(t.terms)
 has_schema(t::FormulaTerm) = has_schema(t.lhs) && has_schema(t.rhs)
 
-struct FullRank
-    schema::Schema
-    already::Set{AbstractTerm}
-end
-
-FullRank(schema) = FullRank(schema, Set{AbstractTerm}())
-
 Base.get(schema::FullRank, key, default) = get(schema.schema, key, default)
 function Base.merge(a::FullRank, b::FullRank)
     return FullRank(merge(a.schema, b.schema), union(a.already, b.already))
@@ -211,11 +275,10 @@ end
 
 function apply_schema(t::FormulaTerm, schema::Schema)
     schema = FullRank(schema)
-
     # only apply rank-promoting logic to RIGHT hand side
     return FormulaTerm(
         apply_schema(t.lhs, schema.schema),
-        collect_matrix_terms(apply_schema(t.rhs, schema)),
+        collect_matrix_terms(apply_schema(t.rhs, MultiSchema(schema))),
     )
 end
 
@@ -233,12 +296,12 @@ matrix would be produced, categorical terms should be "promoted" to full rank
 (where a categorical variable with ``k`` levels would produce ``k`` columns,
 instead of ``k-1`` in the standard contrast coding schemes).
 """
-function apply_schema(t::ConstantTerm, schema::FullRank, Mod::Type)
+function apply_schema(t::ConstantTerm, schema::FullRank)
     push!(schema.already, t)
-    return apply_schema(t, schema.schema, Mod)
+    return apply_schema(t, schema.schema)
 end
 
-apply_schema(t::InterceptTerm, schema::FullRank, Mod::Type) = (push!(schema.already, t); t)
+apply_schema(t::InterceptTerm, schema::FullRank) = (push!(schema.already, t); t)
 
 function apply_schema(t::AbstractTerm, schema::FullRank)
     push!(schema.already, t)
@@ -298,6 +361,7 @@ termsyms(t::InterceptTerm{true}) = Set(1)
 termsyms(t::ConstantTerm) = Set((t.n,))
 termsyms(t::Union{Term,CategoricalTerm,ContinuousTerm}) = Set([t.sym])
 termsyms(t::InteractionTerm) = mapreduce(termsyms, union, t.terms)
+termsyms(t::FunctionTerm) = Set([t.exorig])
 
 symequal(t1::AbstractTerm, t2::AbstractTerm) = issetequal(termsyms(t1), termsyms(t2))
 
@@ -312,3 +376,5 @@ termvars(t::InteractionTerm) = mapreduce(termvars, union, t.terms)
 termvars(t::TupleTerm) = mapreduce(termvars, union, t; init=Symbol[])
 termvars(t::MatrixTerm) = termvars(t.terms)
 termvars(t::FormulaTerm) = union(termvars(t.lhs), termvars(t.rhs))
+termvars(t::FunctionTerm{Fo,Fa,names}) where {Fo,Fa,names} = collect(names)
+termvars(t::RandomEffectsTerm) = vcat(termvars(t.lhs), termvars(t.rhs))
