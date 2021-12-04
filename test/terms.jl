@@ -175,6 +175,24 @@ mimestring(x) = mimestring(MIME"text/plain", x)
         @test "$((a, ()))" == "(a, ())"
     end
 
+    @testset "random effect terms" begin
+        @test T.term(:a) | T.term(:b) isa T.RandomEffectsTerm
+        @test T.term(1) + T.term(:a) | T.term(:b) isa T.RandomEffectsTerm
+        @test T.term(1) + T.term(:a) + T.term(:a) & T.term(:c) | T.term(:b) isa T.RandomEffectsTerm
+
+        y, x1, group, onet = T.term.((:y, :x1, :group, 1))
+        f = y ~ onet + (onet + x1 | group)
+        @test f.rhs[end] isa T.RandomEffectsTerm
+    end
+
+    @testset "ZeroCorr terms" begin
+        @test zerocorr(T.term(1) + T.term(:x1) | T.term(:group)) isa T.ZeroCorr
+
+        y, x1, group, onet = T.term.((:y, :x1, :group, 1))
+        f = y ~ onet + zerocorr(onet + x1 | group)
+        @test f.rhs[end] isa T.ZeroCorr
+    end
+
     @testset "concrete_term error messages" begin
         t = (a=[1, 2, 3], b=[0.0, 0.5, 1.0])
         @test Tables.istable(t)

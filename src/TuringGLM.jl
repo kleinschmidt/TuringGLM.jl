@@ -26,5 +26,6 @@ include("schema.jl")
 include("data_constructors.jl")
 
 export @formula
+export zerocorr
 
 end # module

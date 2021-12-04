@@ -7,15 +7,28 @@ collection of iterable columns or iterable collection of property-accessible
 rows, as defined by [Tables.jl](https://github.com/JuliaData/Tables.jl) or a
 single row (in the form of a `NamedTuple` of scalar values).
 """
-modelcols(t::ContinuousTerm, d::NamedTuple) = copy.(d[t.sym])
-modelcols(t::CategoricalTerm, d::NamedTuple) = t.contrasts[d[t.sym], :]
-function modelcols(t::MatrixTerm, d::Tables.ColumnTable)
-    mat = reduce(hcat, [modelcols(tt, d) for tt in t.terms])
-    return reshape(mat, size(mat, 1), :)
+modelcols(ts::TupleTerm, d::NamedTuple) = modelcols.(ts, Ref(d))
+
+function modelcols(t::Term, d::NamedTuple)
+    return throw(
+        ArgumentError(
+            "can't generate modelcols for un-typed term $t. " *
+            "Use apply_schema to create concrete terms first",
+        ),
+    )
 end
 
 function modelcols(ft::FunctionTerm{Fo,Fa,Names}, d::NamedTuple) where {Fo,Fa,Names}
     return ft.fanon.(getfield.(Ref(d), Names)...)
+end
+
+modelcols(t::ContinuousTerm, d::NamedTuple) = copy.(d[t.sym])
+
+modelcols(t::CategoricalTerm, d::NamedTuple) = t.contrasts[d[t.sym], :]
+
+function modelcols(t::MatrixTerm, d::Tables.ColumnTable)
+    mat = reduce(hcat, [modelcols(tt, d) for tt in t.terms])
+    return reshape(mat, size(mat, 1), :)
 end
 
 modelcols(t::MatrixTerm, d::NamedTuple) = reduce(vcat, [modelcols(tt, d) for tt in t.terms])

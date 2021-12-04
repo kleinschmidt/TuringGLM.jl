@@ -144,6 +144,7 @@ concrete_term(t::Term, d) = concrete_term(t, d, nothing)
 # need this specified to avoid ambiguity
 concrete_term(t::Term, d::Tables.ColumnTable, hint::AbstractTerm) = hint
 concrete_term(t::Term, x, hint::AbstractTerm) = hint
+concrete_term(t, d, hint) = t
 
 function concrete_term(t::Term, xs::AbstractVector{<:Number}, ::Nothing)
     return concrete_term(t, xs, ContinuousTerm)
@@ -181,6 +182,21 @@ apply_schema(t, schema) = t
 apply_schema(terms::TupleTerm, schema) = reduce(+, apply_schema.(terms, Ref(schema)))
 
 apply_schema(t::Term, schema::Schema) = schema[t]
+
+function apply_schema(t::FormulaTerm, schema::Schema)
+    schema = FullRank(schema)
+    # only apply rank-promoting logic to RIGHT hand side
+    return FormulaTerm(
+        apply_schema(t.lhs, schema.schema),
+        collect_matrix_terms(apply_schema(t.rhs, MultiSchema(schema))),
+    )
+end
+
+# function apply_schema(ft::FormulaTerm, schema::Schema)
+#     return FormulaTerm(
+#         apply_schema(ft.lhs, schema), collect_matrix_terms(apply_schema(ft.rhs, schema))
+#     )
+# end
 function apply_schema(it::InteractionTerm, schema::Schema)
     return InteractionTerm(apply_schema(it.terms, schema))
 end
@@ -200,7 +216,7 @@ function apply_schema(t::ConstantTerm, schema::Schema)
     return InterceptTerm{t.n == 1}()
 end
 
-function apply_schema(t::FunctionTerm{typeof(|)}, schema::MultiSchema{FullRank})
+function apply_schema(t::FunctionTerm{typeof(|)}, schema::Schema)
     lhs, rhs = t.args_parsed
 
     isempty(intersect(termvars(lhs), termvars(rhs))) ||
@@ -271,15 +287,6 @@ has_schema(t::FormulaTerm) = has_schema(t.lhs) && has_schema(t.rhs)
 Base.get(schema::FullRank, key, default) = get(schema.schema, key, default)
 function Base.merge(a::FullRank, b::FullRank)
     return FullRank(merge(a.schema, b.schema), union(a.already, b.already))
-end
-
-function apply_schema(t::FormulaTerm, schema::Schema)
-    schema = FullRank(schema)
-    # only apply rank-promoting logic to RIGHT hand side
-    return FormulaTerm(
-        apply_schema(t.lhs, schema.schema),
-        collect_matrix_terms(apply_schema(t.rhs, MultiSchema(schema))),
-    )
 end
 
 # strategy is: apply schema, then "repair" if necessary (promote to full rank

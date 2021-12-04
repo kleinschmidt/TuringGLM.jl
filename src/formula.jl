@@ -180,7 +180,7 @@ function parse!(ex::Expr, rewrites::Vector)
     check_call(ex)
 
     # don't recurse into captured calls
-    if is_call(ex, :capture_call) || is_call(ex, :(StatsModels.capture_call))
+    if is_call(ex, :capture_call) || is_call(ex, :(capture_call))
         @debug "  skipping capture_call"
         return ex
     end

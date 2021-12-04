@@ -234,7 +234,14 @@ random-effects terms.
 """
 function collect_matrix_terms(ts::TupleTerm)
     ismat = collect(is_matrix_term.(ts))
-    return all(ismat) ? MatrixTerm(ts) : MatrixTerm(ts[ismat])
+    if all(ismat)
+        MatrixTerm(ts)
+    elseif any(ismat)
+        matterms = ts[ismat]
+        (MatrixTerm(ts[ismat]), ts[.!ismat]...)
+    else
+        ts
+    end
 end
 
 function collect_matrix_terms(t::T) where {T<:AbstractTerm}
